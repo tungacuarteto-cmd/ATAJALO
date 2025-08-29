@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Arquero de Penales - Final</title>
+<style>
+  body { 
+    background:#2e7d32; 
+    display:flex; 
+    justify-content:center; 
+    align-items:center; 
+    flex-direction:column;
+    height:100vh; 
+    margin:0; 
+    font-family: Arial, sans-serif;
+  }
+  canvas { 
+    background:#4caf50; 
+    border:5px solid #fff; 
+    display:block; 
+    width:95vw;
+    height:auto; 
+  }
+  #restartBtn {
+    margin-top: 10px;
+    padding:10px 20px;
+    font-size:18px;
+    background:orange;
+    border:none;
+    border-radius:10px;
+    cursor:pointer;
+    display:none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="400"></canvas>
+<button id="restartBtn">Nueva tanda de penales</button>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const restartBtn = document.getElementById("restartBtn");
+
+// Escalado responsive
+let scaleX = 1, scaleY = 1;
+function updateScale(){
+  scaleX = canvas.clientWidth / canvas.width;
+  scaleY = canvas.clientHeight / canvas.height;
+}
+window.addEventListener("resize", updateScale);
+updateScale();
+
+// --- Configuración del juego ---
+const goal = { x:100, y:100, w:600, h:200 };
+const ballR = 16;
+let ball = null;
+let message = "";
+let particles = [];
+let touchedZone = null;
+
+const zones = {
+  Q: {x:goal.x, y:goal.y, w:goal.w/3, h:goal.h/2}, 
+  W: {x:goal.x+goal.w/3, y:goal.y, w:goal.w/3, h:goal.h/2}, 
+  E: {x:goal.x+goal.w*2/3, y:goal.y, w:goal.w/3, h:goal.h/2}, 
+  A: {x:goal.x, y:goal.y+goal.h/2, w:goal.w/3, h:goal.h/2}, 
+  S: {x:goal.x+goal.w/3, y:goal.y+goal.h/2, w:goal.w/3, h:goal.h/2}, 
+  D: {x:goal.x+goal.w*2/3, y:goal.y+goal.h/2, w:goal.w/3, h:goal.h/2}, 
+};
+
+let keeper = {
+  x: goal.x+goal.w/2, 
+  y: goal.y+goal.h-20,
+  startX: goal.x+goal.w/2,
+  startY: goal.y+goal.h-20,
+  targetX: goal.x+goal.w/2,
+  targetY: goal.y+goal.h-20,
+  zone:null, 
+  diving:false,
+  progress:0,
+  speed:0.06
+};
+
+let score = 0;
+let totalTime = 120;
+let elapsedTime = 0;
+let gameOver = false;
+let lastTime = Date.now();
+
+// --- Funciones auxiliares (partículas, dibujado, sonidos) ---
+function createParticles(x,y,color="yellow"){
+  for(let i=0;i<15;i++){
+    particles.push({x,y,dx:(Math.random()-0.5)*6,dy:(Math.random()-0.5)*6,life:30,color});
+  }
+}
+function drawParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    let p=particles[i];
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x,p.y,4,4);
+    p.x+=p.dx; p.y+=p.dy; p.life--;
+    if(p.life<=0) particles.splice(i,1);
+  }
+}
+function drawNet() {
+  ctx.strokeStyle="rgba(255,255,255,0.5)";
+  ctx.lineWidth=1;
+  for(let i=0;i<=goal.w;i+=20){
+    ctx.beginPath(); ctx.moveTo(goal.x+i, goal.y); ctx.lineTo(goal.x+i, goal.y+goal.h); ctx.stroke();
+  }
+  for(let j=0;j<=goal.h;j+=20){
+    ctx.beginPath(); ctx.moveTo(goal.x, goal.y+j); ctx.lineTo(goal.x+goal.w, goal.y+j); ctx.stroke();
+  }
+}
+function drawKeeper() {
+  ctx.save();
+  ctx.translate(keeper.x, keeper.y);
+  ctx.fillStyle="navy"; ctx.fillRect(-12,-45,24,45);
+  ctx.fillStyle="black"; ctx.fillRect(-12,0,24,10);
+  ctx.beginPath(); ctx.arc(0,-60,14,0,Math.PI*2); ctx.fillStyle="beige"; ctx.fill();
+  ctx.strokeStyle="navy"; ctx.lineWidth=6;
+  ctx.beginPath(); ctx.moveTo(-12,-35); ctx.lineTo(-35,-15); ctx.moveTo(12,-35); ctx.lineTo(35,-15); ctx.stroke();
+  ctx.fillStyle="orange"; ctx.beginPath(); ctx.arc(-35,-15,6,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(35,-15,6,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle="black"; ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(-10,0); ctx.lineTo(-20,25); ctx.moveTo(10,0); ctx.lineTo(20,25); ctx.stroke();
+  ctx.restore();
+}
+function drawBall() {
+  let auraColor = elapsedTime<=30? null : elapsedTime<=75? "rgba(0,0,255,0.3)" : "rgba(255,0,0,0.3)";
+  if(auraColor) for(let i=0;i<3;i++){ ctx.fillStyle=auraColor; ctx.beginPath(); ctx.arc(ball.x,ball.y,ballR+4+i*2,0,Math.PI*2); ctx.fill(); }
+  ctx.beginPath(); ctx.arc(ball.x+4, ball.y+4, ballR, 0, Math.PI*2); ctx.fillStyle="rgba(0,0,0,0.3)"; ctx.fill();
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ballR,0,Math.PI*2); ctx.fillStyle="white"; ctx.fill(); ctx.stroke();
+  ctx.fillStyle="black";
+  for(let i=0;i<6;i++){ let angle=(i/6)*Math.PI*2; ctx.beginPath(); ctx.arc(ball.x+Math.cos(angle)*ballR*0.6, ball.y+Math.sin(angle)*ballR*0.6,5,0,Math.PI*2); ctx.fill(); }
+}
+const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+function playBeep(f=440,d=200){ const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='square'; o.frequency.setValueAtTime(f,audioCtx.currentTime); g.gain.setValueAtTime(0.2,audioCtx.currentTime); o.connect(g); g.connect(audioCtx.destination); o.start(); setTimeout(()=>o.stop(),d); }
+function playSaveSound(){ playBeep(220,150); }
+function playGoalSound(){ playBeep(660,150); }
+
+function shoot(){
+  if(gameOver) return;
+  message="";
+  const keys = Object.keys(zones);
+  const key = keys[Math.floor(Math.random()*keys.length)];
+  const z = zones[key];
+  let dur = elapsedTime<=40?60:elapsedTime<=90?42:32;
+  let startX = goal.x+goal.w/2, startY = 50;
+  if(key==="S") startY = canvas.height+ballR;
+  ball={x:startX, y:startY, tx:z.x+z.w/2 + (Math.random()*40-20), ty:z.y+z.h/2 + (Math.random()*40-20), t:0, dur, zone:key};
+}
+
+function updateKeeper(){
+  if(keeper.diving){
+    keeper.progress += keeper.speed;
+    if(keeper.progress>=1){ keeper.progress=1; keeper.diving=false; }
+    const t=keeper.progress;
+    const ease=t<0.5? 2*t*t : -1+(4-2*t)*t;
+    keeper.x = keeper.startX + (keeper.targetX-keeper.startX)*ease;
+    keeper.y = keeper.startY + (keeper.targetY-keeper.startY)*ease - Math.sin(ease*Math.PI)*40;
+  }
+}
+
+// --- Feedback zona táctil ---
+function drawZonesHighlight(){ if(touchedZone){ const z=zones[touchedZone]; ctx.fillStyle="rgba(255,255,0,0.3)"; ctx.fillRect(z.x,z.y,z.w,z.h); } }
+
+// --- Actualización principal ---
+function update(){
+  const now=Date.now();
+  const delta=(now-lastTime)/1000;
+  lastTime=now;
+  if(!gameOver) elapsedTime+=delta;
+  let timeLeft=Math.max(0,totalTime-elapsedTime);
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle="white"; ctx.lineWidth=5;
+  ctx.strokeRect(goal.x, goal.y, goal.w, goal.h);
+  drawNet();
+  drawZonesHighlight();
+  updateKeeper();
+
+  if(ball){
+    ball.t++;
+    let tNorm=ball.t/ball.dur;
+    let ease=tNorm<0.5?2*tNorm*tNorm:-1+(4-2*tNorm)*tNorm;
+    ball.x += (ball.tx-ball.x)/(ball.dur-ball.t+1);
+    ball.y += (ball.ty-ball.y)*ease;
+    drawBall();
+    if(ball.t>=ball.dur){
+      if(keeper.zone===ball.zone && Math.hypot(ball.x-keeper.x, ball.y-keeper.y)<60){
+        message="ATAJADA 🧤"; score++; createParticles(ball.x,ball.y,"yellow"); playSaveSound();
+      } else { message="GOOOL ⚽"; createParticles(ball.x,ball.y,"red"); playGoalSound(); }
+      ball=null; setTimeout(shoot,1500);
+    }
+  } else { if(!gameOver && message==="") shoot(); }
+
+  drawKeeper(); drawParticles();
+
+  // UI
+  ctx.fillStyle="white"; ctx.font="24px Arial"; ctx.fillText(message, canvas.width/2-50, 50);
+  ctx.fillStyle="yellow"; ctx.font="20px Arial";
+  ctx.fillText("Atajadas: "+score,20,30);
+  const minutes=Math.floor(timeLeft/60), seconds=Math.floor(timeLeft%60);
+  ctx.fillText(`Tiempo: ${minutes}:${seconds<10?"0"+seconds:seconds}`, canvas.width-150,30);
+
+  // Fin del juego
+  if(timeLeft<=0 && !gameOver){
+    gameOver=true; ball=null; message="";
+    restartBtn.style.display="block";
+    ctx.fillStyle="white"; ctx.font="48px Arial";
+    ctx.fillText("Fin del juego!", canvas.width/2-140, canvas.height/2-40);
+    ctx.fillText(`Score: ${score}`, canvas.width/2-80, canvas.height/2+20);
+
+    // Crédito final debajo del botón
+    ctx.font="20px Arial";
+    ctx.fillText("Creado por Nico F.", canvas.width/2-70, canvas.height/2+80);
+  }
+
+  requestAnimationFrame(update);
+}
+
+// --- Controles ---
+canvas.addEventListener("touchstart", e=>{
+  if(gameOver) return;
+  const rect=canvas.getBoundingClientRect();
+  const touch=e.touches[0];
+  const x=(touch.clientX-rect.left)/scaleX;
+  const y=(touch.clientY-rect.top)/scaleY;
+  touchedZone=null;
+  for(const key in zones){
+    const z=zones[key];
+    if(x>=z.x && x<=z.x+z.w && y>=z.y && y<=z.y+z.h){
+      touchedZone=key; keeper.zone=key; keeper.startX=keeper.x; keeper.startY=keeper.y;
+      keeper.targetX=z.x+z.w/2; keeper.targetY=z.y+z.h/2+40; keeper.progress=0; keeper.diving=true; break;
+    }
+  }
+});
+canvas.addEventListener("touchend",()=>{ touchedZone=null; });
+
+document.addEventListener("keydown", e=>{
+  if(gameOver) return;
+  const key=e.key.toUpperCase();
+  if(zones[key]){ keeper.zone=key; const z=zones[key]; keeper.startX=keeper.x; keeper.startY=keeper.y;
+    keeper.targetX=z.x+z.w/2; keeper.targetY=z.y+z.h/2+40; keeper.progress=0; keeper.diving=true; }
+});
+
+restartBtn.addEventListener("click", ()=>{
+  elapsedTime=0; score=0; gameOver=false; restartBtn.style.display="none"; shoot();
+});
+
+shoot();
+update();
+</script>
+</body>
+</html>
